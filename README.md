@@ -177,7 +177,9 @@ and sign in:
   (drag a tab out of its tab bar to split it again), and a window that closes takes its Files
   panel and any unsaved edits there along.
 - **Terminal**: the pane in its profile's colors and font, typing, a hot keys panel (Copy,
-  Paste, Tab, ⇧Tab, ^C, Esc, Ctrl, Alt, ⇧←, ⇧↩, arrows…), scrollback, selection. On a phone
+  Paste, Tab, ⇧Tab, ^C, Esc, Ctrl, Alt, ⇧←, ⇧↩, arrows…; hold one to repeat it), scrollback,
+  selection. A held key keeps its pace on a slow network: keys typed while the last ones are
+  on their way go to the pane together. On a phone
   two floating buttons open the keyboard and the hot keys; in a coding agent's pane its input is a
   panel and its status lines wait behind an ⓘ button. On a phone lines
   re-flow to the screen (**Wrap**); **Grid** keeps iTerm2's layout, **Fit** scales it to the

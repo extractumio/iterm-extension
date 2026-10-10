@@ -72,4 +72,27 @@ export async function webClip(browser) {
   check("AC-52 web app: on a computer a copy keeps the selection (no focus moved)",
     await computer.page.evaluate(() => document.activeElement?.id !== "kbd" && !getSelection().isCollapsed));
   await computer.page.close();
+
+  // a hot key held down repeats as a keyboard's does; a short press types it once; Enter never repeats
+  const keys = await open(browser, "");
+  await keys.page.click("#keysbtn");
+  const box = async (label) => (await keys.page.$(`#hotkeys button.key:text-is("${label}")`)).boundingBox();
+  const hold = async (label, ms) => {
+    const r = await box(label);
+    await keys.page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+    await keys.page.mouse.down();
+    await keys.page.waitForTimeout(ms);
+    await keys.page.mouse.up();
+    await keys.page.waitForTimeout(150);
+  };
+  const count = (data) => keys.sent.filter((m) => m.t === "in" && m.data === data).length;
+  await hold("↓", 1000);
+  const held = count("\x1b[B");
+  await keys.page.waitForTimeout(300);
+  const after = count("\x1b[B");
+  await hold("↑", 80);
+  await hold("Enter", 1000);
+  check("AC-52 web app: a hot key held down repeats (after 400 ms, about 30 a second) and stops when let go; a short press types once; Enter does not repeat",
+    held >= 12 && held <= 25 && after === held && count("\x1b[A") === 1 && count("\r") === 1, JSON.stringify({ held, after, up: count("\x1b[A"), enter: count("\r") }));
+  await keys.page.close();
 }

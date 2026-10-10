@@ -3,6 +3,7 @@
 over the page's WebSocket. The poll of iTerm's windows they share is in hub.py."""
 import asyncio
 import json
+from collections import deque
 import math
 import time
 
@@ -63,6 +64,8 @@ class Client:
         self.last_new = -NEW_EVERY   # loop time of this browser's last new session
         self.typed_at = -math.inf    # loop time of its last key (the window poll waits)
         self.trace = Tracer(self)    # ?trace=1 (AC-55)
+        self.typing = deque()        # (session, text, trace record): typed, not yet handed to iTerm2
+        self.typer = None            # the task that hands them over
         self.reset_screen()
 
     def reset_screen(self):
@@ -273,6 +276,39 @@ class Client:
 
     # ---------- size ----------
 
+    async def type_queued(self):
+        """Types what the page sent, in order. Keys that arrive while iTerm2 or tmux takes the
+        last ones (a tmux pane's "send-keys" waits for tmux, over ssh for a host) go together in
+        the next batch: a held key comes out at the rate it repeats, not one round trip a key."""
+        loop = asyncio.get_running_loop()
+        while self.typing:
+            session = self.typing[0][0]
+            batch = []
+            while self.typing and self.typing[0][0] is session:      # one pane's keys at a time
+                batch.append(self.typing.popleft())
+            keys = [k for _, _, k in batch]
+            try:
+                if self.show_in_iterm and session is self.session:
+                    await self.bring_tab_forward()
+                for k in keys:
+                    self.trace.step(k, "fwd")
+                via = await type_into(self.conn, session, "".join(data for _, data, _ in batch))
+            except ConnectionClosed:
+                return
+            except Exception as e:                   # fail loud: in words on the page, and in the log
+                log(f"web: in: {e!r}")
+                text = f"iTerm2 no longer has a session needed to {ACTIONS['in']}." if gone(e) else f"Could not {ACTIONS['in']}: {e}"
+                await self.send_quietly({"t": "error", "msg": text})
+                continue
+            for k in keys:
+                self.trace.step(k, "type", via=via)
+                self.trace.typed(k)
+            self.typed_at = loop.time()
+            self.active_until = self.typed_at + ACTIVE_FOR
+            if self.wake:
+                self.trace.woken("wake")
+                self.wake.set()                      # show the echo now, not at the next poll
+
     async def bring_tab_forward(self):
         """iTerm2 processes a hidden tab's output only a few times a second (measured: echo after
         170-830 ms, against 7-20 ms for a shown tab). Typing from the browser therefore selects
@@ -295,17 +331,10 @@ class Client:
         elif t == "in" and self.session and self.hub.suspect(self.session.session_id):
             await self.send({"t": "error", "msg": DROPPED, "sid": self.session.session_id})   # it would reach tmux as commands
         elif t == "in" and self.session:
-            key = self.trace.key(msg)              # timed step by step when tracing (AC-55)
-            if self.show_in_iterm:
-                await self.bring_tab_forward()
-            self.trace.step(key, "fwd")
-            self.trace.step(key, "type", via=await type_into(self.conn, self.session, msg["data"]))
-            self.trace.typed(key)
-            self.typed_at = asyncio.get_running_loop().time()
-            self.active_until = self.typed_at + ACTIVE_FOR
-            if self.wake:
-                self.trace.woken("wake")
-                self.wake.set()                    # show the echo now, not at the next poll
+            self.typing.append((self.session, msg["data"], self.trace.key(msg)))   # timed when tracing (AC-55)
+            self.typed_at = asyncio.get_running_loop().time()        # the window poll waits for typing
+            if not self.typer or self.typer.done():
+                self.typer = asyncio.create_task(self.type_queued())
         elif t == "trace":
             await self.trace.handle(msg)
         elif t == "files" and self.session:
@@ -430,6 +459,8 @@ class Client:
             pass        # a phone that sleeps or switches network drops the socket without a goodbye
         finally:
             self.hub.clients.discard(self)
+            if self.typer:
+                self.typer.cancel()
             self.trace.close()
             await self.stop_stream()
             await self.hub.release(self)     # a phone that goes away must not leave iTerm shrunk

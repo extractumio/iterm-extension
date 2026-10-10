@@ -23,6 +23,10 @@ const FN_ROWS = [
   [["F7", "\x1b[18~"], ["F8", "\x1b[19~"], ["F9", "\x1b[20~"], ["F10", "\x1b[21~"], ["F11", "\x1b[23~"], ["F12", "\x1b[24~"]],
 ];
 
+const HOLD = 400, REPEAT = 33;   // ms: as a keyboard's repeat
+// keys that repeat while held: not the actions, the modifiers, Enter and the signals
+const REPEATS = (a) => !/^(copy|paste|upload|fn|mod:)/.test(a) && !["\r", "\x03", "\x04", "\x1a"].includes(a);
+
 export class Input {
   constructor({ kbd, kbdButton, term, panel, pasteDialog, send, options }) {
     Object.assign(this, { kbd, kbdButton, term, panel, pasteDialog, send, options });
@@ -243,19 +247,36 @@ export class Input {
     this.renderKeys();
     // Buttons never take focus from the terminal, so the iOS keyboard stays up.
     this.panel.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
+    // A key held down repeats as a keyboard's does: typed at once, again after HOLD ms, then
+    // every REPEAT ms until it is let go (the bridge sends what comes meanwhile together).
+    let held = null;
+    const stop = () => { if (held) { clearTimeout(held.timer); clearInterval(held.timer); held.done = true; } };
+    this.panel.addEventListener("pointerdown", (e) => {
+      const b = e.target.closest("button.key");
+      if (!b || !REPEATS(b.dataset.action) || e.button > 0) return;
+      stop();
+      const seq = this.withMods(this.seqOf(b.dataset.action));
+      held = { b, done: false };
+      this.type(seq, "hotkey", e);
+      held.timer = setTimeout(() => { if (!held.done) held.timer = setInterval(() => this.type(seq, "hotkey"), REPEAT); }, HOLD);
+    });
+    for (const end of ["pointerup", "pointercancel", "pointerleave"]) this.panel.addEventListener(end, stop);
     this.panel.addEventListener("click", (e) => {
       const b = e.target.closest("button.key");
       if (!b) return;
       const a = b.dataset.action;
+      if (held?.b === b) { held = null; return; }   // typed on pointerdown (and maybe repeated)
       if (a.startsWith("mod:")) { const m = a.slice(4); this.mods[m] = !this.mods[m]; this.syncMods(); return; }
       if (a === "fn") { this.fn = !this.fn; return this.renderKeys(); }
       if (a === "paste") return this.pasteFromClipboard();
       if (a === "upload") return this.options.pickFile();
       if (a === "copy") return this.copySelection();
-      let seq = a;
-      if (a.startsWith("arrow:")) seq = (this.options.appCursor() ? "\x1bO" : "\x1b[") + a.slice(6);
-      this.type(this.withMods(seq), "hotkey", e);
+      this.type(this.withMods(this.seqOf(a)), "hotkey", e);
     });
+  }
+
+  seqOf(a) {
+    return a.startsWith("arrow:") ? (this.options.appCursor() ? "\x1bO" : "\x1b[") + a.slice(6) : a;
   }
 
   syncMods() {
